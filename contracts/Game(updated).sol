@@ -76,6 +76,7 @@ contract TicTacToe {
 
         g.state = State.Playing;
         g.lastMoveTime = block.timestamp;
+        g.turn = msg.sender;
 
         emit GameJoined(gameId, msg.sender, msg.value);
     }
