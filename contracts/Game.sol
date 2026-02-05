@@ -44,7 +44,7 @@ contract TicTacToe {
     event Timeout(uint256 indexed gameId, address indexed loser);
     event Raised(uint256 indexed gameId, address indexed player, uint256 amount);
     event RaiseMatched(uint256 indexed gameId, address indexed player, uint256 amount);
-    event Loss(uint256 indexed gameId, address indexed loser, address indexed winner);
+    event BetTimeout(uint256 indexed gameId, address indexed loser, address indexed winner);
     event GameCancelled(uint256 indexed gameId, address indexed playerX, uint256 refund);
 
     /// @param _dev Fee recipient; pass address(0) to use deployer as Dev
@@ -150,7 +150,7 @@ contract TicTacToe {
         g.raiser = address(0);
         g.targetDeposit = 0;
         g.raiseDeadline = 0;
-        emit Loss(gameId, loser, winner);
+        emit BetTimeout(gameId, loser, winner);
         _payoutWinner(g, winner, gameId);
     }
 
