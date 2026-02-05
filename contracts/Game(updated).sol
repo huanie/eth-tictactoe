@@ -245,7 +245,7 @@ contract TicTacToe {
         g.turn = (g.turn == g.playerX) ? g.playerO : g.playerX;
     }
 
-    /// Surrender: treated as draw; both get full refund (no fee)
+    /// Surrender
     function surrender(uint256 gameId) external nonReentrant {
         Game storage g = games[gameId];
         require(g.state == State.Playing, "not playing");
