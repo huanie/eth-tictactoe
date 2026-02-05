@@ -26,15 +26,11 @@ contract TicTacToe {
         Cell[3][3] board;
         address turn;
         State state;
-        bool paid;
         uint256 lastMoveTime; // last move/join time for timeout
         // raise state
-        bool raiseActive;
         address raiser;
         uint256 targetDeposit;
         uint256 raiseDeadline;
-        uint256 depositX;
-        uint256 depositO;
     }
 
     uint256 public gameCount;
@@ -46,8 +42,8 @@ contract TicTacToe {
     event GameEnded(uint256 indexed gameId, State result, address winner, uint256 payout, uint256 devFee);
     event Surrendered(uint256 indexed gameId, address indexed player);
     event Timeout(uint256 indexed gameId, address indexed loser);
-    event Raised(uint256 indexed gameId, address indexed player, uint256 amount, uint256 targetDeposit, uint256 deadline);
-    event RaiseMatched(uint256 indexed gameId, address indexed player, uint256 amount, uint256 depositX, uint256 depositO);
+    event Raised(uint256 indexed gameId, address indexed player, uint256 amount);
+    event RaiseMatched(uint256 indexed gameId, address indexed player, uint256 amount);
     event Loss(uint256 indexed gameId, address indexed loser, address indexed winner);
     event GameCancelled(uint256 indexed gameId, address indexed playerX, uint256 refund);
 
@@ -62,10 +58,8 @@ contract TicTacToe {
         gameId = ++gameCount;
         Game storage g = games[gameId];
         g.playerX = msg.sender;
-        g.bet = msg.value;
 
         g.prizePool = msg.value;
-        g.depositX = msg.value;
 
         g.turn = msg.sender;
         g.state = State.Waiting;
@@ -78,11 +72,9 @@ contract TicTacToe {
         require(g.state == State.Waiting, "not waiting");
         require(g.playerO == address(0), "already joined");
         require(msg.sender == g.playerX, "not creator");
-        require(!g.paid, "already paid");
         uint256 refund = g.prizePool;
         require(refund > 0, "nothing to refund");
         g.prizePool = 0;
-        g.paid = true;
         g.state = State.Cancelled;
         emit GameCancelled(gameId, msg.sender, refund);
         (bool ok, ) = payable(msg.sender).call{value: refund}("");
@@ -100,7 +92,6 @@ contract TicTacToe {
 
         g.playerO = msg.sender;
         g.prizePool += msg.value;
-        g.depositO += msg.value;
 
         g.state = State.Playing;
         g.lastMoveTime = block.timestamp;
@@ -113,73 +104,49 @@ contract TicTacToe {
     function raise(uint256 gameId) external payable nonReentrant {
         Game storage g = games[gameId];
         require(g.state == State.Playing, "not playing");
-        require(!g.paid, "already paid");
-        require(!g.raiseActive, "raise active");
+        require(g.raiser != address(0), "raise active");
         require(msg.value > 0, "amount > 0");
         require(msg.sender == g.playerX || msg.sender == g.playerO, "not player");
         require(msg.sender == g.turn, "not your turn");
 
         g.prizePool += msg.value;
-        if (msg.sender == g.playerX) {
-            g.depositX += msg.value;
-            g.targetDeposit = g.depositX;
-        } else {
-            g.depositO += msg.value;
-            g.targetDeposit = g.depositO;
-        }
-        g.raiseActive = true;
+        g.targetDeposit = msg.value;
         g.raiser = msg.sender;
         g.raiseDeadline = block.timestamp + 60;
         g.lastMoveTime = block.timestamp;
-        emit Raised(gameId, msg.sender, msg.value, g.targetDeposit, g.raiseDeadline);
+        emit Raised(gameId, msg.sender, g.targetDeposit);
     }
 
     // Match raise: opponent must match target deposit within 60s
     function matchRaise(uint256 gameId) external payable nonReentrant {
         Game storage g = games[gameId];
         require(g.state == State.Playing, "not playing");
-        require(!g.paid, "already paid");
-        require(g.raiseActive, "no active raise");
+        require(g.targetDeposit != 0, "no active bet");
         require(block.timestamp <= g.raiseDeadline, "too late");
         require(msg.sender == g.playerX || msg.sender == g.playerO, "not player");
         require(msg.sender != g.raiser, "raiser cannot match");
 
-        uint256 need;
-        if (msg.sender == g.playerX) {
-            require(g.targetDeposit >= g.depositX, "internal");
-            need = g.targetDeposit - g.depositX;
-            require(msg.value == need, "must match exactly");
-            g.depositX += msg.value;
-        } else {
-            require(g.targetDeposit >= g.depositO, "internal");
-            need = g.targetDeposit - g.depositO;
-            require(msg.value == need, "must match exactly");
-            g.depositO += msg.value;
-        }
+        require(msg.value == g.targetDeposit, "The bet must match");
 
         g.prizePool += msg.value;
-        g.raiseActive = false;
         g.raiser = address(0);
         g.targetDeposit = 0;
         g.raiseDeadline = 0;
         g.lastMoveTime = block.timestamp;
-        emit RaiseMatched(gameId, msg.sender, msg.value, g.depositX, g.depositO);
+        emit RaiseMatched(gameId, msg.sender, msg.value);
     }
 
     // If opponent fails to match before deadline, raiser wins
-    function lose(uint256 gameId) external nonReentrant {
+    function claimBetTimeout(uint256 gameId) external nonReentrant {
         Game storage g = games[gameId];
         require(g.state == State.Playing, "not playing");
-        require(!g.paid, "already paid");
-        require(g.raiseActive, "no active raise");
+        require(g.targetDeposit != 0, "There is no bet happening");
         require(block.timestamp > g.raiseDeadline, "not expired");
 
         address winner = g.raiser;
-        require(winner != address(0), "no raiser");
         address loser = (winner == g.playerX) ? g.playerO : g.playerX;
 
         g.state = (winner == g.playerX) ? State.WinX : State.WinO;
-        g.raiseActive = false;
         g.raiser = address(0);
         g.targetDeposit = 0;
         g.raiseDeadline = 0;
@@ -193,8 +160,7 @@ contract TicTacToe {
     function move(uint256 gameId, uint8 x, uint8 y) external nonReentrant {
         Game storage g = games[gameId];
         require(g.state == State.Playing, "the game is not active");
-        require(!g.paid, "already paid");
-        require(!g.raiseActive, "raise active");
+        require(g.targetDeposit != 0, "raise active");
         require(msg.sender == g.turn, "it is not your turn");
         require(x < 3 && y < 3, "out of bounds");
         require(g.board[x][y] == Cell.Empty, "taken");
@@ -267,7 +233,7 @@ contract TicTacToe {
     function claimTimeout(uint256 gameId) external nonReentrant {
         Game storage g = games[gameId];
         require(g.state == State.Playing, "not playing");
-        require(!g.raiseActive, "raise active");
+        require(g.targetDeposit != 0, "raise active");
         require(block.timestamp >= g.lastMoveTime + MOVE_TIMEOUT, "not timeout yet");
         address loser = g.turn;
         address winner = (g.turn == g.playerX) ? g.playerO : g.playerX;
@@ -279,7 +245,6 @@ contract TicTacToe {
     // Fallback: trigger payout/refund (normal games auto-settle)
     function claim(uint256 gameId) external nonReentrant {
         Game storage g = games[gameId];
-        require(!g.paid, "already paid");
         require(g.state == State.Draw || g.state == State.WinX || g.state == State.WinO, "not finished");
         if (g.state == State.WinX) _payoutWinner(g, g.playerX, gameId);
         else if (g.state == State.WinO) _payoutWinner(g, g.playerO, gameId);
@@ -294,23 +259,19 @@ contract TicTacToe {
         uint256 prizePool,
         address turn,
         State state,
-        bool paid,
         uint256 lastMoveTime
     ) {
         Game storage g = games[gameId];
-        return (g.playerX, g.playerO, g.bet, g.prizePool, g.turn, g.state, g.paid, g.lastMoveTime);
+        return (g.playerX, g.playerO, g.bet, g.prizePool, g.turn, g.state, g.lastMoveTime);
     }
 
     function getRaiseInfo(uint256 gameId) external view returns (
-        bool raiseActive,
         address raiser,
         uint256 targetDeposit,
-        uint256 raiseDeadline,
-        uint256 depositX,
-        uint256 depositO
+        uint256 raiseDeadline
     ) {
         Game storage g = games[gameId];
-        return (g.raiseActive, g.raiser, g.targetDeposit, g.raiseDeadline, g.depositX, g.depositO);
+        return ( g.raiser, g.targetDeposit, g.raiseDeadline );
     }
 
     function getCell(uint256 gameId, uint8 x, uint8 y) external view returns (Cell) {
@@ -330,8 +291,6 @@ contract TicTacToe {
 
     // payout
     function _payoutWinner(Game storage g, address winner, uint256 gameId) internal {
-        if (g.paid) return;
-        g.paid = true;
         uint256 amount = g.prizePool;
 
         // effects first
@@ -350,8 +309,6 @@ contract TicTacToe {
     }
 
     function _refundDrawWithFee(Game storage g, uint256 gameId) internal {
-        if (g.paid) return;
-        g.paid = true;
         uint256 amount = g.prizePool;
         g.prizePool = 0;
 
@@ -370,8 +327,6 @@ contract TicTacToe {
     }
 
     function _refundDrawNoFee(Game storage g, uint256 gameId) internal {
-        if (g.paid) return;
-        g.paid = true;
         uint256 b = g.bet;
         g.prizePool = 0;
         (bool okX, ) = payable(g.playerX).call{value: b}("");
